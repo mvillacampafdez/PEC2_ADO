@@ -14,12 +14,12 @@ library(org.Hs.eg.db)
 require("biomaRt")
 library(gplots)
 library(hgu133plus2.db)
-library(ReactomeAP)
+library(ReactomePA)
 library(limma)
 
 if(!file.exists("results"))  dir.create("results", recursive=TRUE)
 
-##### PREPARACI覰 DE LOS DATOS #####
+##### PREPARACI脫N DE LOS DATOS #####
 
 # En primer lugar, se leen las dos tablas 'targets.csv' y 'counts.csv':
 counts <- read.csv('counts.csv', sep=';')
@@ -33,7 +33,7 @@ rownames(counts) <- counts[,1]; counts <- counts[,-1]
 dim(counts) # 56202 292
 head(rownames(counts)) # [1] "ENSG00000223972.4" "ENSG00000227232.4" "ENSG00000243485.2" "ENSG00000237613.2" "ENSG00000268020.2" "ENSG00000240361.1"
 
-# Ahora ya se tienen el mismo n鷐ero de columnas en 'counts' (correspondientes a las muestras) que filas en el conjunto 'targets'
+# Ahora ya se tienen el mismo n煤mero de columnas en 'counts' (correspondientes a las muestras) que filas en el conjunto 'targets'
 
 #####
 
@@ -79,23 +79,23 @@ ddsMat
 
 dim(ddsMat)
 samples$Group
-# A partir del conjunto datos, las primeras 10 columnas corresponden con ELI, las siguientes 10 con NIT y las 鷏timas 10 con SFI
+# A partir del conjunto datos, las primeras 10 columnas corresponden con ELI, las siguientes 10 con NIT y las 煤ltimas 10 con SFI
 
 
 ### Pre-filtrado del conjunto de datos:
 ddsMat <- ddsMat[rowSums(counts(ddsMat)) > 1,]
 dim(ddsMat) # 43658 30     
 
-### Transformaci髇 estabilizadora de la varianza:
+### Transformaci贸n estabilizadora de la varianza:
 vsd <- vst(ddsMat, blind = FALSE)
 head(assay(vsd), 3)
 colData(vsd)
 
-# Transformaci髇 rlog
+# Transformaci贸n rlog
 rld <- rlog(ddsMat, blind = FALSE)
 head(assay(rld), 3)
 
-# Efecto de la transformaci髇:
+# Efecto de la transformaci贸n:
 dds <- estimateSizeFactors(ddsMat)
 
 df <- bind_rows(
@@ -131,7 +131,7 @@ mds <- as.data.frame(colData(vsd))  %>%
 ggplot(mds, aes(x = `1`, y = `2`, color = Group, shape = Group)) +
   geom_point(size = 3) + coord_fixed()
 
-# Gene clustering (los genes con expresi髇 m醩 variable)
+# Gene clustering (los genes con expresi贸n m谩s variable)
 topVarGenes <- head(order(rowVars(assay(vsd)), decreasing = TRUE), 20)
 mat  <- assay(vsd)[topVarGenes, ]
 mat  <- mat - rowMeans(mat)
@@ -161,12 +161,12 @@ resES
 mcols(resES, use.names = TRUE)
 summary(resES)
 
-# Considerando una fracci髇 de 10% de falsos positivos: n鷐ero de DEG:
+# Considerando una fracci贸n de 10% de falsos positivos: n煤mero de DEG:
 sum(resEN$padj < 0.1, na.rm=TRUE) # 5872
 sum(resES$padj < 0.1, na.rm=TRUE) # 7998
 sum(resSN$padj < 0.1, na.rm=TRUE) # 794
 
-# 'Subset' los resultados y ordenar en funci髇 de log2FC (up-regulated y down-regulated)
+# 'Subset' los resultados y ordenar en funci贸n de log2FC (up-regulated y down-regulated)
 resSigEN <- subset(resEN, padj < 0.1)
 head(resSigEN[ order(resSigEN$log2FoldChange), ])
 head(resSigEN[ order(resSigEN$log2FoldChange, decreasing = TRUE), ])
@@ -212,31 +212,31 @@ mat  <- assay(vsd)[topSigGenes, ]
 mat  <- mat - rowMeans(mat)
 anno <- as.data.frame(colData(vsd)[, c("Group")])
 rownames(anno) <- colnames(mat)
-pheatmap(mat, annotation_col = anno, main = 'Genes m醩 significativos de los tres contrastes')
+pheatmap(mat, annotation_col = anno, main = 'Genes m谩s significativos de los tres contrastes')
 
 
 mat  <- assay(vsd)[head(rownames(resSigEN[order(resSigEN$padj),]),10), ]
 mat  <- mat - rowMeans(mat)
 anno <- as.data.frame(colData(vsd)[, c("Group")])
 rownames(anno) <- colnames(mat)
-pheatmap(mat, annotation_col = anno, main = 'Genes m醩 significativos ELIvsNIT')
+pheatmap(mat, annotation_col = anno, main = 'Genes m谩s significativos ELIvsNIT')
 
 
 mat  <- assay(vsd)[head(rownames(resSigES[order(resSigES$padj),]),10), ]
 mat  <- mat - rowMeans(mat)
 anno <- as.data.frame(colData(vsd)[, c("Group")])
 rownames(anno) <- colnames(mat)
-pheatmap(mat, annotation_col = anno, main = 'Genes m醩 significativos ELIvsSFI')
+pheatmap(mat, annotation_col = anno, main = 'Genes m谩s significativos ELIvsSFI')
 
 
 mat  <- assay(vsd)[head(rownames(resSigSN[order(resSigSN$padj),]),10), ]
 mat  <- mat - rowMeans(mat)
 anno <- as.data.frame(colData(vsd)[, c("Group")])
 rownames(anno) <- colnames(mat)
-pheatmap(mat, annotation_col = anno, main = 'Genes m醩 significativos SFIvsNIT')
+pheatmap(mat, annotation_col = anno, main = 'Genes m谩s significativos SFIvsNIT')
 
 
-##### ANOTACI覰 #####
+##### ANOTACI脫N #####
 resEN$symbol <- mapIds(org.Hs.eg.db,
                      keys=gsub("\\.[0-9]*$", "", row.names(resEN)),
                      column="SYMBOL",
@@ -292,7 +292,7 @@ res_EN.genes <- unique(rownames(resEN)[resEN$padj<0.1])
 res_ES.genes <- unique(rownames(resES)[resES$padj<0.1])
 res_SN.genes <- unique(rownames(resSN)[resSN$padj<0.1])
 
-# Combinaci髇 de las tres listas
+# Combinaci贸n de las tres listas
 comb <- unique(c(res_SN.genes,res_EN.genes,res_ES.genes))
 
 # Comparandolas
@@ -307,7 +307,7 @@ vennDiagram(results.genes, cex = 1,names = c("SFIvsNIT","ELIvsNIT","ELIvsSFI"), 
 
 
 ## HEATMAP
-# Selecci髇 de los gees significativos para representar la expresi髇:
+# Selecci贸n de los gees significativos para representar la expresi贸n:
 res_EN.genes <- unique(rownames(resEN)[resEN$padj<0.01])
 res_ES.genes <- unique(rownames(resES)[resES$padj<0.01])
 res_SN.genes <- unique(rownames(resSN)[resSN$padj<0.01])
@@ -334,7 +334,7 @@ heatmap.2(HMdata,
      srtCol = 30)
 
 
-##### AN罫ISIS DE SIGNIFICACI覰 BIOL覩ICA #####
+##### AN脕LISIS DE SIGNIFICACI脫N BIOL脫GICA #####
 
 listOfTables <- list(ELIvsNIT = resENOrdered, 
                      ELIvsSFI = resESOrdered, 
