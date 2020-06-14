@@ -1,0 +1,968 @@
+---
+title: "PEC 2: Análisis de datos de ultrasecuenciación"
+author: "Marina Villacampa Fernández"
+date: "`r format(Sys.time(), '%A, %e de %B, %Y')`"
+subtitle: 'Análisis de datos ómicos'
+output:
+  pdf_document:
+    toc: yes
+    toc_depth: 2
+  html_document:
+    
+    toc: yes
+    toc_depth: 2
+    toc_float: yes
+params:
+  printcode: no
+  seed_random: 123456
+lang: es 
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+options(tinytex.verbose = TRUE)
+```
+
+```{r echo=F}
+if(!file.exists("results"))  dir.create("results", recursive=TRUE)
+```
+
+
+```{r LIBRARIES, echo=F,message=F}
+library(DESeq2)
+library("magrittr")
+library("dplyr")
+library("ggplot2")
+library("pheatmap")
+library("RColorBrewer")
+library(stats)
+library("ggbeeswarm")
+library("genefilter")
+library(stringr)
+library("AnnotationDbi")
+library(org.Hs.eg.db)
+require("biomaRt")
+library(gplots)
+library(hgu133plus2.db)
+require(ReactomePA)
+library(limma)
+```
+
+El repositorio de GitHub con el fichero Rmd, el fichero R, los archivos para su reproducibilidad y el PDF del enunciado está disponible en este [**enlace**](https://github.com/mvillacampafdez/PEC2_ADO.git).
+
+# 1. Abstract        
+
+Para este informe, se parte de un conjunto de datos de ultrasecuenciación obtenidos de un total de 54 tejidos distintos. En este concreto, nos centramos en datos de RNA-Seq pertenecientes a 292 muestras de tiroides para las que se van a comparar tres tipos de infiltración a nivel de expresión génica. Para este propósito, haciendo una selección de únicamente 30 muestras (10 por grupo), se va a llevar a cabo un análisis de la expresión génica, obteniendo contrastes entre los distintos tipos de infiltración, a fin de realizar un análisis de la significación biológica y así obtener ls funciones biológicas asociadas a cada contraste.
+
+
+# 2. Objetivos        
+
+Los objetivos principales de este informe es analizar un conjunto de datos de RNA-Seq en función del tratamiento fijado (3 tipos de tratamiento) para el tejido de estudio, previamente transformados y seleccionados, de forma que se obtenga la expresión diferencial entre las distintas fases, así como estudiar distintos patrones de expresión entre las mismas y llevar a cabo un análisis de significación biológica.
+
+# 3. Materiales y métodos         
+
+## 3.1. Naturaleza de los datos, tipo de experimento, diseño experimental         
+
+Para el desarrollo de esta PEC se parte de dos ficheros, 'counts.csv' y 'targets.csv' con la información de las muestras de un estudio obtenido del repositorio GTEx, el cuál contiene datos de múltiples tipos en un total de 54 tejidos.
+
+Estos datos se obtuvieron en el proyecto 'Genotype-Tissue Expression (GTEx), cuya finalidad es construir un recurso público integral para estudiar la expresión y regulación de genes específicos de tejidos. Para dicho proyecto, se recolectaron muestras de hasta 54 tejidos no-enfermos en casi 1000 individuos para distintos ensayos moleculares (como WGS, WES o RNA-Seq).
+
+En este caso, únicamente se va a centrar en los datos de expresión génica pertenecientes a un análisis de tiroides donde se comparan entre sí tres tipos de infiltración en un total de 292 muestras:          
+- Tejidos sin infiltrar (NIT)        
+- Pequeños infiltrados focales (SFI)       
+- Infiltrados linfoides extensos (ELI)
+
+Por tanto, se parten de datos de expresión génica (RNA-Seq) de un total de 292 muestras de análisis del tiroides, de las que 236 muestras corresponden con el grupo NIT, 42 con el grupo SFI y 14 con el grupo ELI (en función del tipo de infiltración como se ha explicado). La información correspondiente a estas muestras se encuentra en los ficheros 'targets.csv' y 'counts.csv'. El primero de estos ficheros tiene para cada una de las muestras, 9 características asociadas (número de experimento, identificador de la muestra, nombre de la muestra, grupo de análisis, parte del cuerpo a la que pertenece, tipo de datos moleculares, sexo, grupo y nombre acortado). De estas características, la más interesante es la relacionada con el grupo de análisis, ya que indica para cada muestra el tipo de infiltración. El segundo de estos ficheros se corresponde con la matriz de conteos de la expresión: para cada muestra, incluye información de expresión de un total de 56202 tránscritos.
+
+En este informe, sin embargo, no se va a partir de estas 292 muestras, sino que se van a seleccionar de forma aleatoria 30 muestrás únicamente (10 por cada grupo muestral).
+
+## 3.2. Métodos y herramientas       
+
+### 3.2.1. Procedimiento general análisis         
+
+El primer paso a realizar es seleccionar las 30 muestras iniciales (10 por cada grupo muestral). Una vez se tienen las muestras seleccionadas, hay que preprocesar los datos. Para ello, hay que filtrar aquellos tránscritos que no tengan expresión en ninguna de las muestras, ya que no aportan información al estudio, y normalizar los datos. El tipo de normalización que se va a usar es la transformación estabilizadora de la varianza, ya que es mucho más rápida y eficaz computacionalmente y menos sensible a outliers de altos conteos que la transformación 'rlog'. Como en este caso partimos de 30 muestras, es aconsejable usar la transformación estabilizadora de la varianza frente a rlog.
+
+Esta normalización es necesaria puesto que muchos de los métodos estadísticos más comunes para un análisis exploratorio de datos multidimensionales suelen trabajar mejor con datos que generalmente tengan el mismo rango de varianza con diferentes rangos de los valores medios. En los casos de RNA-Seq, la varianza generalmente crece con la media, por lo que hay que corregir este hecho.
+
+Una vez se tienen los datos preprocesados, se identificarían los genes diferencialmente expresados (DEG), al comparar las 3 fases entre sí (en total tres comparaciones: ELI con NIT, ELI con SFI y NIT con SFI). Se obtendría un listado de cada una de los tránscritos que tengan una expresión diferencial entre cada par de grupos muestrales.
+
+Como estos listados no estarán anotados (están nombrados según el identificador de ENSEMBL, no con el nombre del gen al que corresponden), el siguiente paso una vez se tienen los genes diferencialmente expresados es anotarlos (obtener para cada uno, el identificador del gen asociado). Este paso se va a realizar para cada uno de los 3 listados obtenidos con los genes diferencialmente expresados de las 3 comparaciones.
+
+A partir de estos tres listados de genes se va a realizar también un análisis de significancia biológica (un enriquecimiento funcional). Este paso se basa en obtener las funciones biológicas que están significativamente asociadas a los genes diferencialmente expresados obtenidos.
+
+Por último, también se va a realizar una comparación entre las distintas agrupaciones (entre los listados de genes con expresión diferencial obtenidos) a fin de buscar patrones de expresión o agrupaciones de las muestras.
+
+
+
+### 3.2.2. Software usado                
+
+El desarrollo de este informe se ha llevado a cabo en RStudio, utilizando principalmente el paquete 'DESeq2', muy útil para análisis de datos de ultrasecuenciación como es el caso, tanto para el preprocesado de los datos como para la identificación de los genes diferencialmente expresados. 
+
+Otros paquetes de R muy usados en los análisis de este informe han sido 'limma' o 'ReactomePA'. Los gráficos, principalmente han sido realizados con los paquetes 'ggplot2' o 'gplots'.
+
+Además, los ficheros para la reproducibilidad del informe están en un repositorio de Github, como bien se indica al principio del informe (https://github.com/mvillacampafdez/PEC1_ADO.git).
+
+## 3.3. Pasos        
+
+El primero de los pasos es obtener las 30 muestras de forma aleatoria con las que se trabajará. Teniendo en cuenta que la información incluída en el fichero 'targets.csv' es la información asociada a los conteos del fichero 'counts.csv', se pueden seleccionar las muestras que corresponden con cada uno de los grupos, y de forma aleatoria seleccionar 10 de cada uno de los grupos de muestras. Estos datos, se obtendría un único objeto con los conteos de dichas 30 muestras.
+
+A partir de este objeto creado, para poder trabajar con estos datos, habría que transformarlo en un objeto de tipo DESeqDataSet, que incluye la información de la expresión de cada muestra e información del diseño del experimento (en este caso, a qué grupo pertenece cada muestra).
+
+A partir de este objeto, se procede a realizar el preprocesado de los datos. En primer lugar, se filtran aquellos tránscritos sin expresión (0) en ninguna de las 30 muestras, ya que estos tránscritos no aportan información, solo van a favorecer a que cueste más computacionalmente los distintos análisis. En este paso, de los 56202 tránscritos iniciales, se descartan 12544 (quedando un conjunto de datos de 43658 tránscritos).
+
+La segunda parte del preprocesado es la normalización, la transformación de los datos para limitar la variabilidad de la varianza, ya que en datos de RNA-Seq tiende a aumentar la varianza con la media, y esto afectaría a los distintos análisis. El paquete 'DESeq2' de R ofrece dos tipos de normalización. En este caso se va estabilizar la varianza en función de la media con la función 'vst' de dicho paquete, ya que funciona mejor con datos con muchas muestras en vez de la transformación log2.
+
+Una vez se tienen todos los datos preprocesados, se realiza un análisis exploratorio de los datos, incluyendo distintos gráficos diferenciando el grupo al que pertenece cada muestra (NIT, SFI o ELI), como un PCA para ver si las muestras se agrupan según el grupo de muestra, o un heatmap para ver el grado de similaridad entre las muestras. 
+
+El siguiente paso es la identificación de los genes diferencialmente expresados. Para este paso, se va a usar el paquete 'DESeq2' de R (usado en pasos anteriores para obtener los conteos de los datos de expresión génica y normalizar dichos datos con la función 'vst'). De esta forma, se va a obtener una matriz para cada contraste, con valores como log2FC, valor medio, p-valor o p-valor ajustado para cada uno de los transcritos. Con estos valores, para cada contraste se pueden seleccionar aquellos genes que tengan una expresión diferencial en función de su p-valor asociado, además de poder diferenciar aquellos que estén 'up-regulated' o 'down-regulated' en cada contraste según su valor de FoldChange. Se van a obtener por tanto para cada contraste, un listado de los genes diferencialmente expresados, además de representar los genes para cada contraste en un diagrama de tipo volcán, según sus valores de FoldChange y sus p-valores.
+
+Con estos genes seleccionados que tienen una expresión diferencial, se procede a realizar la anotación. Esto es porque los genes no están nombrados según el ID de los genes, sino por la nomenclatura de ENSEMBL. Esto se corrige, y por tanto se va a obtener para cada uno de los transcritos, la nomenclatura correcta de los genes.
+
+Como se han obtenido 3 listados distintos de genes, se pueden buscar patrones de expresión. Para este propósito, se puede obtener un diagrama de Venn para ver los genes con expresión diferencial que coinciden entre los distintos contrastes. Además, se puede obtener un Heatmap con la expresión de aquellos genes con mayor expresión diferencial, para comprobar si hay patrones de expresión entre las distintas muestras.
+
+Por último, a partir de los genes diferencialmente expresados obtenidos, se realiza un análisis de significancia biológica, a partir de un análisis de enriquecimiento. En este análisis, se obtienen las funciones biológicas que están significativamente más ligadas a estos listados de genes diferencialmente expresados. En este paso, se obtendrían las funciones biológicas que estarían más ligadas a cada uno de los contrastes, lo que permitiría obtener conclusiones biológicas a partir de estos datos de expresión génica.
+
+# 4. Resultados         
+
+## 4.1. Preprocesado de los datos         
+```{r FILES, echo=F,message=FALSE}
+counts <- read.csv('counts.csv', sep=';')
+targets <- read.csv('targets.csv')
+rownames(counts) <- counts[,1]; counts <- counts[,-1]
+```
+
+```{r Obtención de la matriz, echo=F, message=F, warning=F}
+# Diferenciar las muestras de cada grupo
+muestrasELI <- which(targets$Group=='ELI')
+muestrasNIT <- which(targets$Group=='NIT')
+muestrasSFI <- which(targets$Group=='SFI')
+
+# Selección aleatoria de las 30 muestras
+set.seed(params$seed_random)
+random_ELI <- muestrasELI[order(runif(muestrasELI))][1:10]
+set_ELI <- counts[,random_ELI]
+
+set.seed(params$seed_random)
+random_NIT <- muestrasNIT[order(runif(muestrasNIT))][1:10]
+set_NIT <- counts[,random_NIT]
+
+set.seed(params$seed_random)
+random_SFI <- muestrasSFI[order(runif(muestrasSFI))][1:10]
+set_SFI <- counts[,random_SFI]
+
+# Juntar los tres conjuntos
+datos <- counts[,c(random_ELI,random_NIT,random_SFI)]
+samples <- targets[c(random_ELI,random_NIT,random_SFI),]
+
+ddsMat <- DESeqDataSetFromMatrix(countData = datos,
+                                 colData = samples,
+                                 design = ~ Group)
+```
+
+```{r Preprocesado de los datos, echo=F, message=F, warning=F}
+### Pre-filtrado del conjunto de datos:
+ddsMat <- ddsMat[rowSums(counts(ddsMat)) > 1,]
+  
+### Transformación estabilizadora de la varianza:
+vsd <- vst(ddsMat, blind = FALSE)
+# Transformación rlog
+rld <- rlog(ddsMat, blind = FALSE)
+```
+
+
+A partir de los pasos explicados previamente, el primer paso es obtener la matriz con las 30 muestras seleccionadas con el paquete 'DESeq2' de R. Se obtiene un objeto de tipo 'DESeqDataSet', que incluye el nivel de expresión de cada tránscrito para cada muestra y además información sobre las muestras (la más importante es la que está relacionada con el grupo de muestreo: ELI, NIT o SFI). Este conjunto de datos inicialmente contiene información para 56202 tránscritos. En un primer filtrado, se eliminan aquellos que no tengan expresión en ninguna de las 30 muestras, obteniendo un conjunto de datos de 43658 tránscritos. 
+
+Además, se normalizan estos datos por medio de la normalización 'vst' del mismo paquete de R 'DESeq2'. Se normalizan también con la transformación 'rlog' del mismo paquete, aunque se selecciona posteriormente la normalización 'vst' debido a que es mucho más rápida y menos exigente computacionalmente, además de ser menos sensible a los datos atípicos.
+
+En la siguiente figura se muestra la comparación de las normalizaciones rlog y vst en comparación con la transformación logarítmica estándar:
+
+```{r Efecto de la transformación, echo=F, warning=F}
+dds <- estimateSizeFactors(ddsMat)
+
+df <- bind_rows(
+  as_data_frame(log2(counts(dds, normalized=TRUE)[, 1:2]+1)) %>%
+    mutate(transformation = "log2(x + 1)"),
+  as_data_frame(assay(vsd)[, 1:2]) %>% mutate(transformation = "vst"),
+  as_data_frame(assay(rld)[, 1:2]) %>% mutate(transformation = "rlog"))
+
+colnames(df)[1:2] <- c("x", "y")  
+
+ggplot(df, aes(x = x, y = y)) + geom_hex(bins = 80) +
+  coord_fixed() + facet_grid( . ~ transformation) 
+```
+
+A partir de estos datos normalizados (con la normalización 'vst'), se puede obtener una matriz de distancias entre las muestras, y así representarlas en un mapa de calor para ver si hay parecidos entre las distintas muestras. En el siguiente gráfico, se muestran el grado de similaridad entre las distintas muestras (en azul oscuro aquellos pares de muestras más similares, con menos distancia entre ellas, y en blanco aquellas más dispares). Se aprecia que hay similaridad entre algunos grupos de muestras:
+
+```{r echo=F, fig.height=3}
+### Samples distances     
+sampleDists <- dist(t(assay(vsd)))
+
+sampleDistMatrix <- as.matrix( sampleDists )
+rownames(sampleDistMatrix) <- paste( vsd$dex, vsd$cell, sep = " - " )
+colnames(sampleDistMatrix) <- NULL
+colors <- colorRampPalette( rev(brewer.pal(9, "Blues")) )(255)
+pheatmap(sampleDistMatrix,
+         clustering_distance_rows = sampleDists,
+         clustering_distance_cols = sampleDists,
+         col = colors)
+```
+
+
+Además, para ver si las muestras se agrupan en función del grupo (ELI, NIT o SFI), se representan las muestras realizando un análisis de componentes principales (PCA), obteniendo que las muestras del grupo ELI son las más diferenciadas, mientras que las muestras del grupo NIT y SFI se entremezclan ligeramente, por lo que son más parecidas entre sí estas muestras que al compararlas con el grupo ELI. Además, las diferencias principales del grupo ELI están explicadas en la primera componente principal, por lo que las diferencias son más pronunciadas, mientras que las diferencias entre los grupos NIT y SFI están explicadas principalmente por la segunda componente principal:
+
+```{r echo=F,fig.height=3}
+### PCA plot       
+plotPCA(vsd, intgroup = c('Group'))
+```
+
+Otro gráfico que puede servir para ver la distribución de las muestras en función del grupo al que pertenezcan es mediante un escalado multidimensional. Al representar el gráfico, se obtiene un resultado muy similar al gráfico anterior del PCA, ya que el grupo ELI es el más diferenciado de los 3, y los grupos NIT y SFI están ligeramente entremezclados.
+
+```{r echo=F,fig.height=3}
+### MDS plot      
+mds <- as.data.frame(colData(vsd))  %>%
+  cbind(cmdscale(sampleDistMatrix))
+ggplot(mds, aes(x = `1`, y = `2`, color = Group, shape = Group)) +
+  geom_point(size = 3) + coord_fixed()
+```
+
+Antes de obtener los genes diferencialmete expresados, es posible representar un 'cluster' de los genes con más variabilidad de la expresión, para poder predecir si va a haber expresión diferencial entre los grupos de muestras.
+
+
+```{r echo=F, fig.height=3}
+# Gene clustering (los genes con expresión más variable)
+topVarGenes <- head(order(rowVars(assay(vsd)), decreasing = TRUE), 20)
+mat  <- assay(vsd)[topVarGenes, ]
+mat  <- mat - rowMeans(mat)
+anno <- as.data.frame(colData(vsd)[, c("Group")])
+rownames(anno) <- colnames(mat)
+pheatmap(mat, annotation_col = anno,show_rownames = F,show_colnames = F)
+```
+
+Se obtiene que sí que hay una expresión diferencial entre los grupos al tener en cuenta los 20 genes con mayor variabilidad.
+
+## 4.2. Identificación de los DEG
+
+Una vez se tienen los datos preprocesados, se procede a la identificación de los genes diferencialmente expresados. Para ello, dentro del paquete 'DESeq2', existe la función 'DESeq' que lleva a cabo los contrastes para obtener el nivel de significancia de cada gen. Se obtiene como resultado una matriz para cada contraste, con información para cada transcrito como el p-valor o el p-valor ajustado o el logaritmo de FoldChange. Se tienen que realizar por tanto tres contrastes: entre los grupos ELI y NIT, entre los grupos SFI y NIT y entre los grupos ELI y SFI.
+```{r DEG contrasts, echo=F, message=F, warning=F}
+dds <- DESeq(dds, parallel =TRUE)
+
+## ELI-NIT      
+resEN <- results(dds, contrast=c("Group","ELI","NIT"))
+
+## SFI-NIT
+resSN <- results(dds, contrast=c("Group","SFI","NIT"))
+
+## ELI-SFI
+resES <- results(dds, contrast=c("Group","ELI","SFI"))
+```
+
+Aceptando una tasa de falsos positivos del 10% (p-valor ajustado = 0.1), para cada contraste se obtiene las siguientes cantidades de genes diferencialmente expresados:
+
+- ELI vs NIT: 5872         
+- ELI vs SFI: 7998        
+- SFI vs NIT: 794         
+
+Es destacable que en el contraste entre los grupos SFI y NIT hay un número de genes diferencialmente expresados mucho menor que en los otros dos contrastes (que involucran a la fase ELI). Esto era esperable a partir de los gráficos PCA (análisis de componentes principales) y MDS (escalado multidimensional) obtenidos anteriormente, en los que las dos fases NIT y SFI eran las más similares, estando ligeramente entremezcladas.
+
+A partir de estos datos, se obtienen las tablas con los genes diferencialmente expresados ordenados según su valor log2FC (los de mayor valor positivo, son los genes 'up-regulated' de cada contraste, más expresados en el primero de los dos grupos, mientras que los de valor más negativo son los 'down-regulated', más expresados en el segundo de los dos grupos de cada contraste).
+
+En primer lugar, para los genes del contraste 'ELIvsNIT', los primeros 10 resultados de los genes 'down-regulated' son los siguientes:  
+```{r echo=F}
+# 'Subset' los resultados y ordenar en función de log2FC (up-regulated y down-regulated)
+resSigEN <- subset(resEN, padj < 0.1)
+head(resSigEN[ order(resSigEN$log2FoldChange), ],10)
+```
+
+Mientras que para el mismo contraste, los primeros 10 resultados de los genes 'up-regulated son los siguientes:
+```{r echo=F}
+head(resSigEN[ order(resSigEN$log2FoldChange, decreasing = TRUE), ],10)
+```
+
+Del mismo modo, para el contraste 'ELIvsSFI', los primeros 10 genes 'down-regulated':
+```{r echo=F}
+resSigES <- subset(resES, padj < 0.1)
+head(resSigES[ order(resSigES$log2FoldChange), ],10)
+```
+
+Y los primeros 10 genes 'up-regulated':
+```{r echo=F}
+head(resSigES[ order(resSigES$log2FoldChange, decreasing = TRUE), ],10)
+```
+
+Por último, para el contraste 'SFIvsNIT', los primeros 10 genes 'down-regulated' son:
+```{r echo=F}
+resSigSN <- subset(resSN, padj < 0.1)
+head(resSigSN[ order(resSigSN$log2FoldChange), ],10)
+```
+
+Mientras que los primeros 10 genes 'up-regulated' son:
+```{r echo=F}
+head(resSigSN[ order(resSigSN$log2FoldChange, decreasing = TRUE), ],10)
+```
+
+Con estos datos, se pueden representar en un diagrama la expresión en las 30 muestras diferenciando por grupo del gen más diferencialmente expresado en cada uno de los contrastes. Se muestran a continuación los tres diagramas de la expresión de los 3 genes (seleccionados por su p-valor ajustado) en las 30 muestras. Se dividen en 3 columnas en cada gráfico, en función del grupo a la que pertenezca cada muestra: 
+
+```{r echo=F, fig.height=3}
+### plotting results:
+# Counts plot
+topGeneSN <- rownames(resSN)[which.min(resSN$padj)]
+topGeneEN <- rownames(resEN)[which.min(resEN$padj)]
+topGeneES <- rownames(resES)[which.min(resES$padj)]
+
+# SN
+geneCounts <- plotCounts(dds, gene = topGeneSN, intgroup = c("Group"),
+                         returnData = TRUE)
+ggplot(geneCounts, aes(x = Group, y = count, color = Group, group = Group)) +
+  scale_y_log10() + geom_point(size = 3) + geom_line() + ggtitle('Between SFI and NIT')
+
+# EN
+geneCounts <- plotCounts(dds, gene = topGeneEN, intgroup = c("Group"),returnData = TRUE)
+ggplot(geneCounts, aes(x = Group, y = count, color = Group, group = Group)) +
+  scale_y_log10() + geom_point(size = 3) + geom_line() + ggtitle('Between ELI and NIT')
+
+# ES
+geneCounts <- plotCounts(dds, gene = topGeneES, intgroup = c("Group"),
+                         returnData = TRUE)
+ggplot(geneCounts, aes(x = Group, y = count, color = Group, group = Group)) +
+  scale_y_log10() + geom_point(size = 3) + geom_line() + ggtitle('Between ELI and SFI')
+```
+
+En cada uno de los gráficos se aprecia la diferencia de la expresión entre los dos grupos correspondientes (en el primero entre los grupos NIT y SFI, en el segundo entre ELI y NIT y en el tercero entre ELI y SFI).
+
+Para observar la expresión de estos genes significativos obtenidos, se seleccionan para cada contraste los 10 genes con p-valor ajustado más significativo (los 10 valores menores), y eliminando de los 30 genes seleccionados, los repetidos. Con estos 23 genes seleccionados, se realiza un cluster con los datos de expresión de estos genes seleccionados, obteniendo el siguiente gráfico:
+```{r echo=F, fig.height=3}
+topSigGenes <- unique(c(head(rownames(resSigEN[order(resSigEN$padj),]),10),
+                        head(rownames(resSigES[order(resSigES$padj),]),10),
+                        head(rownames(resSigSN[order(resSigSN$padj),]),10)))
+mat  <- assay(vsd)[topSigGenes, ]
+mat  <- mat - rowMeans(mat)
+anno <- as.data.frame(colData(vsd)[, c("Group")])
+rownames(anno) <- colnames(mat)
+pheatmap(mat, annotation_col = anno,show_rownames = F,show_colnames = F,main='Genes más significativos de los tres contrastes')
+```
+
+Se distingue una clara agrupación, especialmente con las muestras del grupo ELI. Además, se puede realizar el cluster con los 20 genes más singnificativos de cada contraste por separado:
+```{r echo=F, fig.height=3}
+mat  <- assay(vsd)[head(rownames(resSigEN[order(resSigEN$padj),]),20), ]
+mat  <- mat - rowMeans(mat)
+anno <- as.data.frame(colData(vsd)[, c("Group")])
+rownames(anno) <- colnames(mat)
+pheatmap(mat, annotation_col = anno, main = 'Genes más significativos ELIvsNIT',show_rownames = F,show_colnames = F)
+
+
+mat  <- assay(vsd)[head(rownames(resSigES[order(resSigES$padj),]),20), ]
+mat  <- mat - rowMeans(mat)
+anno <- as.data.frame(colData(vsd)[, c("Group")])
+rownames(anno) <- colnames(mat)
+pheatmap(mat, annotation_col = anno, main = 'Genes más significativos ELIvsSFI',show_rownames = F,show_colnames = F)
+
+
+mat  <- assay(vsd)[head(rownames(resSigSN[order(resSigSN$padj),]),20), ]
+mat  <- mat - rowMeans(mat)
+anno <- as.data.frame(colData(vsd)[, c("Group")])
+rownames(anno) <- colnames(mat)
+pheatmap(mat, annotation_col = anno, main = 'Genes más significativos SFIvsNIT',show_rownames = F,show_colnames = F)
+```
+
+
+## 4.3. Anotación      
+
+Una vez se tienen los genes diferencialmente expresados para cada contraste, es necesario realizar la anotación de estos genes, ya que están anotados con la nomenclatura de Ensembl. Para ello, se van a añadir dos nuevas columnas, con el nombre del gen y el identificador (entrada EntrezID) para cada uno de ellos.
+
+Para poder llevar esto a cabo, hay que tener en cuenta que partimos de transcritos, codificados con la versión del mismo (por ejemplo, ENSG00000000457.9). Hay que modificar estos nombres, ya que la terminación (en el ejemplo sería '.9') corresponde con la versión del transcrito (ENSG00000000457), por lo que hay que eliminar la parte final correspondiente a la versión para poder obtener el nombre del gen correspondiente. Además, es posible que algunos de los transcritos no tengan una nomenclatura asociada, por lo que darían resultados de 'NA' en los nombres. 
+
+Por tanto, para cada contraste, se tiene un dataframe con los datos obtenidos del contraste y además la nomenclatura correcta del gen (Symbol y EntrezID). Estos dataframe, se ordenan en función del p-valor, siendo aquellos más significativos en primer lugar.
+
+```{r echo=F, message=F, warning=F}
+resEN$symbol <- mapIds(org.Hs.eg.db,
+                     keys=gsub("\\.[0-9]*$", "", row.names(resEN)),
+                     column="SYMBOL",
+                     keytype="ENSEMBL",
+                     multiVals="first")
+
+resEN$entrez <- mapIds(org.Hs.eg.db,
+                     keys=gsub("\\.[0-9]*$", "", row.names(resEN)),
+                     column="ENTREZID",
+                     keytype="ENSEMBL",
+                     multiVals="first")
+
+resENOrdered <- resEN[order(resEN$pvalue),]
+
+
+
+resES$symbol <- mapIds(org.Hs.eg.db,
+                       keys=gsub("\\.[0-9]*$", "", row.names(resES)),
+                       column="SYMBOL",
+                       keytype="ENSEMBL",
+                       multiVals="first")
+
+resES$entrez <- mapIds(org.Hs.eg.db,
+                       keys=gsub("\\.[0-9]*$", "", row.names(resES)),
+                       column="ENTREZID",
+                       keytype="ENSEMBL",
+                       multiVals="first")
+
+resESOrdered <- resES[order(resES$pvalue),]
+
+
+
+resSN$symbol <- mapIds(org.Hs.eg.db,
+                       keys=gsub("\\.[0-9]*$", "", row.names(resSN)),
+                       column="SYMBOL",
+                       keytype="ENSEMBL",
+                       multiVals="first")
+
+resSN$entrez <- mapIds(org.Hs.eg.db,
+                       keys=gsub("\\.[0-9]*$", "", row.names(resSN)),
+                       column="ENTREZID",
+                       keytype="ENSEMBL",
+                       multiVals="first")
+
+resSNOrdered <- resSN[order(resSN$pvalue),]
+
+```
+
+Los primeros 5 genes anotados del contraste 'ELIvsNIT' son:
+```{r echo=F}
+head(resENOrdered,5)
+```
+
+Por otro lado, los primeros 5 genes anotados del contraste 'ELIvsSFI' son:
+```{r echo=F}
+head(resESOrdered,5)
+```
+
+Por último, los primeros 5 genes anotados del contraste 'SFIvsNIT' son:
+```{r echo=F}
+head(resSNOrdered,5)
+```
+
+## 4.4. Comparación entre distintas agrupaciones       
+
+Para comparar los distintos contrastes para ver las similaridades entre sí, se puede obtener un diagrama de Venn al comparar los genes que se han obtenido significativos entre los tres contrastes:
+```{r echo=F,fig.height=3,fig.width=3}
+## DIAGRAMA DE VENN
+res_EN.genes <- unique(rownames(resEN)[resEN$padj<0.1])
+res_ES.genes <- unique(rownames(resES)[resES$padj<0.1])
+res_SN.genes <- unique(rownames(resSN)[resSN$padj<0.1])
+
+# Combinación de las tres listas
+comb <- unique(c(res_SN.genes,res_EN.genes,res_ES.genes))
+
+# Comparandolas
+res_EN.genes.2 <- comb %in% res_EN.genes
+res_ES.genes.2 <- comb %in% res_ES.genes  
+res_SN.genes.2 <- comb %in% res_SN.genes  
+
+# Generando conteos Venn para el diagrama
+counts.genes <- cbind(res_SN.genes.2, res_EN.genes.2,res_ES.genes.2)
+results.genes <- vennCounts(counts.genes)
+vennDiagram(results.genes, cex = 1,names = c("SFIvsNIT","ELIvsNIT","ELIvsSFI"), circle.col = c("red", "blue","green"))
+```
+
+En este diagrama se observa que entre los contrastes ELIvsNIT y ELIvsSFI, hay muchos genes coincidentes entre ellos. Esto es debido a que los dos grupos NIT y SFI tienen una expresión similar (como bien se observó en los gráficos PCA y MDS anteriormente), por lo que comparten muchas de las diferencias con el grupo ELI. Además, se vuelve a observar que los genes diferencialmente expresados en el contraste SFIvsNIT están en menor número en comparación a los otros dos contrastes.
+
+Además del Diagrama de Venn, se va a obtener un Heatmap para comparar la expresión de los genes más significativos de los tres contrastes (aquellos con un p-valor ajustado menor de 0.01):
+
+```{r echo=F}
+## HEATMAP
+# Selección de los gees significativos para representar la expresión:
+res_EN.genes <- unique(rownames(resEN)[resEN$padj<0.01])
+res_ES.genes <- unique(rownames(resES)[resES$padj<0.01])
+res_SN.genes <- unique(rownames(resSN)[resSN$padj<0.01])
+probesInHeatmap <- unique(c(res_SN.genes,res_EN.genes,res_ES.genes))
+HMdata <- assay(ddsMat)[rownames(assay(ddsMat)) %in% probesInHeatmap,]
+
+my_palette <- colorRampPalette(c("blue", "red"))(n = 299)
+heatmap.2(HMdata,
+     Rowv = TRUE,
+     Colv = TRUE,
+     dendrogram = 'both',
+     main = "Genes diferencialmente expresados",
+     scale = "row",
+     col = my_palette,
+     sepcolor = "white",
+     sepwidth = c(0.05,0.05),
+     cexRow = 0.5,
+     cexCol = 0.9,
+     key = TRUE,
+     keysize = 1.5,
+     density.info = "histogram",
+     ColSideColors = c(rep("red",10),rep("blue",10), rep("green",10)),
+     tracecol = NULL,
+     srtCol = 30)
+```
+
+En el gráfico se aprecian patrones de expresión entre las muestras de los grupos. Las muestras correspondientes al grupo de muestreo ELI tienden a agruparse (en rojo), mientras que las muestras de SFI y NIT tienden a entremezclarse (como ya se había visto).
+
+## 4.5. Análisis de significación biológica           
+
+El último paso es realizar un análisis de significación biológica. Este paso consiste en obtener las funciones biológicas asociadas a los genes significativos de cada contraste. Para obtener dichas funciones, lo que se realiza es un contraste para cada función entre la proporción que aparece en los genes de cada contraste en contraste con la proporción de dicha función en todos los genes del genoma.
+
+Se obtiene por tanto las funciones biológicas que significativamente están en mayor proporción en las 3 listas de genes diferencialmente expresados en cada contraste. El resultado es un dataframe, donde cada fila corresponde con cada función biológica, y las columnas corresponden con distintas características (identificador de la función, descripción, ratios, p-valor...). Además, se obtienen 3 ficheros por cada contraste: un fichero 'csv' con el dataframe obtenido completo y dos ficheros 'pdf', el primero con un gráfico de barras con las funciones biológicas más significativas, y un gráfico de red, donde se representan las relaciones entre las distintas funciones. A continuación se muestran los primeros resultados del análisis de significación biológica (sin mostrar la 8ª columna, que incluye los identificadores de los genes que incluyen dicha función biológica):
+
+```{r echo=F}
+listOfTables <- list(ELIvsNIT = resENOrdered, 
+                     ELIvsSFI = resESOrdered, 
+                     SFIvsNIT = resSNOrdered)
+listOfSelected <- list()
+
+for (i in 1:length(listOfTables)){
+  topTab <- listOfTables[[i]]
+  listOfSelected[[i]] <- na.omit(topTab$entrez[topTab$padj<0.1])
+}
+mapped_genes2GO <- mappedkeys(org.Hs.egGO)
+mapped_genes2KEGG <- mappedkeys(org.Hs.egPATH)
+mapped_genes <- union(mapped_genes2GO , mapped_genes2KEGG)
+
+listOfData <- listOfSelected[1:3]
+comparisonsNames <- c('ELIvsNIT','ELIvsSFI','SFIvsNIT')
+universe <- mapped_genes
+enrichment <- list()
+for (i in 1:length(listOfData)){
+  genesIn <- listOfData[[i]]
+  comparison <- comparisonsNames[i]
+  enrich.result <- enrichPathway(gene = genesIn,
+                                 pvalueCutoff = 0.05,
+                                 readable = T,
+                                 pAdjustMethod = "BH",
+                                 organism = "human",
+                                 universe = universe)
+  enrichment[[i]] <- enrich.result
+  cat("##################################")
+  cat("\nComparison: ", comparison,"\n")
+  print(head(enrich.result[,-8]))
+  
+  if (length(rownames(enrich.result@result)) != 0) {
+    write.csv(as.data.frame(enrich.result), 
+              file =paste0("./results/","ReactomePA.Results.",comparison,".csv"), 
+              row.names = FALSE)
+    
+    pdf(file=paste0("./results/","ReactomePABarplot.",comparison,".pdf"))
+    print(barplot(enrich.result, showCategory = 15, font.size = 4, 
+                  title = paste0("Reactome Pathway Analysis for ", comparison,". Barplot")))
+    dev.off()
+    
+    pdf(file = paste0("./results/","ReactomePAcnetplot.",comparison,".pdf"))
+    print(cnetplot(enrich.result, categorySize = "geneNum", schowCategory = 15, 
+                   vertex.label.cex = 0.75))
+    dev.off()
+  }
+}
+```
+
+
+# 5. Discusión       
+
+Una de las mayores limitaciones en este estudio es la magnitud de los datos, ya que con datos de ultrasecuenciación se suelen obtener miles de variables (genes), lo que hace que el estudio de los datos sea muy costoso computacionalmente (una gran limitación). 
+
+Otro de los grandes inconvenientes es la necesidad de transformar los datos, ya que dependen de muchos factores (en el proceso de secuenciación, hay muchos puntos en los que el error aumenta).
+
+En este caso no ha ocurrido al partir de datos humanos, pero para este tipo de análisis se usan mucho funciones y paquetes ya establecidas. Este tipo de mejoras no están implementadas para todos los organismos, lo que complicaría el análisis.
+
+
+
+# Apéndice: Código en R con comentarios        
+
+```{r eval=F}
+
+library(DESeq2)
+library("magrittr")
+library("dplyr")
+library("ggplot2")
+library("pheatmap")
+library("RColorBrewer")
+library(stats)
+library("ggbeeswarm")
+library("genefilter")
+library(stringr)
+library("AnnotationDbi")
+library(org.Hs.eg.db)
+require("biomaRt")
+library(gplots)
+library(hgu133plus2.db)
+library(ReactomeAP)
+library(limma)
+
+if(!file.exists("results"))  dir.create("results", recursive=TRUE)
+
+##### PREPARACIÓN DE LOS DATOS #####
+
+# En primer lugar, se leen las dos tablas 'targets.csv' y 'counts.csv':
+counts <- read.csv('counts.csv', sep=';')
+targets <- read.csv('targets.csv')
+dim(counts) # 56202 293
+dim(targets) # 292 9
+
+# La primera columna del conjunto 'counts' corresponde con los genes, 
+# por lo que se modifica este conjunto de datos para tener esta columna como
+# nombres de cada fila:
+rownames(counts) <- counts[,1]; counts <- counts[,-1]
+dim(counts) # 56202 292
+head(rownames(counts)) 
+# [1] "ENSG00000223972.4" "ENSG00000227232.4" "ENSG00000243485.2" 
+# "ENSG00000237613.2" "ENSG00000268020.2" "ENSG00000240361.1"
+
+# Ahora ya se tienen el mismo número de columnas en 'counts' 
+# (correspondientes a las muestras) que filas en el conjunto 'targets'
+
+#####
+
+# Seleccionar 10 muestras por cada grupo de muestreo:
+# Seleccionar las muestras que corresponden a cada grupo:
+table(targets$Group) # ELI: 14  NIT: 236  SFI: 42
+
+muestrasELI <- which(targets$Group=='ELI')
+length(muestrasELI) # 14
+
+muestrasNIT <- which(targets$Group=='NIT')
+length(muestrasNIT) # 236
+
+muestrasSFI <- which(targets$Group=='SFI')
+length(muestrasSFI) # 42
+
+set.seed(123456)
+(random_ELI <- muestrasELI[order(runif(muestrasELI))][1:10])
+set_ELI <- counts[,random_ELI]
+
+set.seed(123456)
+(random_NIT <- muestrasNIT[order(runif(muestrasNIT))][1:10])
+set_NIT <- counts[,random_NIT]
+
+set.seed(123456)
+(random_SFI <- muestrasSFI[order(runif(muestrasSFI))][1:10])
+set_SFI <- counts[,random_SFI]
+
+# Juntar los tres conjuntos
+datos <- cbind(set_ELI,set_NIT,set_SFI)
+dim(datos) # 56202 30
+
+datos <- counts[,c(random_ELI,random_NIT,random_SFI)]
+samples <- targets[c(random_ELI,random_NIT,random_SFI),]
+
+ddsMat <- DESeqDataSetFromMatrix(countData = datos,
+                                 colData = samples,
+                                 design = ~ Group)
+ddsMat
+
+
+##### PREPROCESADO DE LOS DATOS ##### 
+
+dim(ddsMat)
+samples$Group
+# A partir del conjunto datos, las primeras 10 columnas corresponden con ELI, 
+# las siguientes 10 con NIT y las últimas 10 con SFI
+
+
+### Pre-filtrado del conjunto de datos:
+ddsMat <- ddsMat[rowSums(counts(ddsMat)) > 1,]
+dim(ddsMat) # 43658 30     
+
+### Transformación estabilizadora de la varianza:
+vsd <- vst(ddsMat, blind = FALSE)
+head(assay(vsd), 3)
+colData(vsd)
+
+# Transformación rlog
+rld <- rlog(ddsMat, blind = FALSE)
+head(assay(rld), 3)
+
+# Efecto de la transformación:
+dds <- estimateSizeFactors(ddsMat)
+
+df <- bind_rows(
+  as_data_frame(log2(counts(dds, normalized=TRUE)[, 1:2]+1)) %>%
+    mutate(transformation = "log2(x + 1)"),
+  as_data_frame(assay(vsd)[, 1:2]) %>% mutate(transformation = "vst"),
+  as_data_frame(assay(rld)[, 1:2]) %>% mutate(transformation = "rlog"))
+
+
+colnames(df)[1:2] <- c("x", "y")  
+
+ggplot(df, aes(x = x, y = y)) + geom_hex(bins = 80) +
+  coord_fixed() + facet_grid( . ~ transformation) 
+
+### Samples distances     
+sampleDists <- dist(t(assay(vsd)))
+
+sampleDistMatrix <- as.matrix( sampleDists )
+rownames(sampleDistMatrix) <- paste( vsd$dex, vsd$cell, sep = " - " )
+colnames(sampleDistMatrix) <- NULL
+colors <- colorRampPalette( rev(brewer.pal(9, "Blues")) )(255)
+pheatmap(sampleDistMatrix,
+         clustering_distance_rows = sampleDists,
+         clustering_distance_cols = sampleDists,
+         col = colors)
+
+### PCA plot       
+plotPCA(vsd, intgroup = c('Group'))
+
+### MDS plot      
+mds <- as.data.frame(colData(vsd))  %>%
+  cbind(cmdscale(sampleDistMatrix))
+ggplot(mds, aes(x = `1`, y = `2`, color = Group, shape = Group)) +
+  geom_point(size = 3) + coord_fixed()
+
+# Gene clustering (los genes con expresión más variable)
+topVarGenes <- head(order(rowVars(assay(vsd)), decreasing = TRUE), 20)
+mat  <- assay(vsd)[topVarGenes, ]
+mat  <- mat - rowMeans(mat)
+anno <- as.data.frame(colData(vsd)[, c("Group")])
+rownames(anno) <- colnames(mat)
+pheatmap(mat, annotation_col = anno,show_rownames = F,show_colnames = F)
+
+
+##### DEG ##### 
+dds <- DESeq(dds, parallel =TRUE)
+
+## ELI-NIT      
+resEN <- results(dds, contrast=c("Group","ELI","NIT"))
+resEN
+mcols(resEN, use.names = TRUE)
+summary(resEN)
+
+## SFI-NIT
+resSN <- results(dds, contrast=c("Group","SFI","NIT"))
+resSN
+mcols(resSN, use.names = TRUE)
+summary(resSN)
+
+## ELI-SFI
+resES <- results(dds, contrast=c("Group","ELI","SFI"))
+resES
+mcols(resES, use.names = TRUE)
+summary(resES)
+
+# Considerando una fracción de 10% de falsos positivos: número de DEG:
+sum(resEN$padj < 0.1, na.rm=TRUE) # 5872
+sum(resES$padj < 0.1, na.rm=TRUE) # 7998
+sum(resSN$padj < 0.1, na.rm=TRUE) # 794
+
+# 'Subset' los resultados y ordenar en función de log2FC (up-regulated y down-regulated)
+resSigEN <- subset(resEN, padj < 0.1)
+head(resSigEN[ order(resSigEN$log2FoldChange), ])
+head(resSigEN[ order(resSigEN$log2FoldChange, decreasing = TRUE), ])
+
+resSigES <- subset(resES, padj < 0.1)
+head(resSigES[ order(resSigES$log2FoldChange), ])
+head(resSigES[ order(resSigES$log2FoldChange, decreasing = TRUE), ])
+
+resSigSN <- subset(resSN, padj < 0.1)
+head(resSigSN[ order(resSigSN$log2FoldChange), ])
+head(resSigSN[ order(resSigSN$log2FoldChange, decreasing = TRUE), ])
+
+### plotting results:
+# Counts plot
+topGeneSN <- rownames(resSN)[which.min(resSN$padj)]
+topGeneEN <- rownames(resEN)[which.min(resEN$padj)]
+topGeneES <- rownames(resES)[which.min(resES$padj)]
+
+# SN
+geneCounts <- plotCounts(dds, gene = topGeneSN, intgroup = c("Group"),
+                         returnData = TRUE)
+ggplot(geneCounts, aes(x = Group, y = count, color = Group, group = Group)) +
+  scale_y_log10() + geom_point(size = 3) + geom_line() + ggtitle('Between SFI and NIT')
+
+# EN
+geneCounts <- plotCounts(dds, gene = topGeneEN, intgroup = c("Group"),returnData = TRUE)
+ggplot(geneCounts, aes(x = Group, y = count, color = Group, group = Group)) +
+  scale_y_log10() + geom_point(size = 3) + geom_line() + ggtitle('Between ELI and NIT')
+
+# ES
+geneCounts <- plotCounts(dds, gene = topGeneES, intgroup = c("Group"),
+                         returnData = TRUE)
+ggplot(geneCounts, aes(x = Group, y = count, color = Group, group = Group)) +
+  scale_y_log10() + geom_point(size = 3) + geom_line() + ggtitle('Between ELI and SFI')
+
+
+# GENE CLUSTERING
+
+topSigGenes <- unique(c(head(rownames(resSigEN[order(resSigEN$padj),]),10),
+                        head(rownames(resSigES[order(resSigES$padj),]),10),
+                        head(rownames(resSigSN[order(resSigSN$padj),]),10)))
+mat  <- assay(vsd)[topSigGenes, ]
+mat  <- mat - rowMeans(mat)
+anno <- as.data.frame(colData(vsd)[, c("Group")])
+rownames(anno) <- colnames(mat)
+pheatmap(mat, annotation_col = anno, 
+         main = 'Genes más significativos de los tres contrastes',show_rownames = F,show_colnames = F)
+
+
+mat  <- assay(vsd)[head(rownames(resSigEN[order(resSigEN$padj),]),10), ]
+mat  <- mat - rowMeans(mat)
+anno <- as.data.frame(colData(vsd)[, c("Group")])
+rownames(anno) <- colnames(mat)
+pheatmap(mat, annotation_col = anno, main = 'Genes más significativos ELIvsNIT',show_rownames = F,show_colnames = F)
+
+
+mat  <- assay(vsd)[head(rownames(resSigES[order(resSigES$padj),]),10), ]
+mat  <- mat - rowMeans(mat)
+anno <- as.data.frame(colData(vsd)[, c("Group")])
+rownames(anno) <- colnames(mat)
+pheatmap(mat, annotation_col = anno, main = 'Genes más significativos ELIvsSFI',show_rownames = F,show_colnames = F)
+
+
+mat  <- assay(vsd)[head(rownames(resSigSN[order(resSigSN$padj),]),10), ]
+mat  <- mat - rowMeans(mat)
+anno <- as.data.frame(colData(vsd)[, c("Group")])
+rownames(anno) <- colnames(mat)
+pheatmap(mat, annotation_col = anno, main = 'Genes más significativos SFIvsNIT',show_rownames = F,show_colnames = F)
+
+
+##### ANOTACIÓN #####
+resEN$symbol <- mapIds(org.Hs.eg.db,
+                     keys=gsub("\\.[0-9]*$", "", row.names(resEN)),
+                     column="SYMBOL",
+                     keytype="ENSEMBL",
+                     multiVals="first")
+
+resEN$entrez <- mapIds(org.Hs.eg.db,
+                     keys=gsub("\\.[0-9]*$", "", row.names(resEN)),
+                     column="ENTREZID",
+                     keytype="ENSEMBL",
+                     multiVals="first")
+
+resENOrdered <- resEN[order(resEN$pvalue),]
+head(resENOrdered)
+
+
+resES$symbol <- mapIds(org.Hs.eg.db,
+                       keys=gsub("\\.[0-9]*$", "", row.names(resES)),
+                       column="SYMBOL",
+                       keytype="ENSEMBL",
+                       multiVals="first")
+
+resES$entrez <- mapIds(org.Hs.eg.db,
+                       keys=gsub("\\.[0-9]*$", "", row.names(resES)),
+                       column="ENTREZID",
+                       keytype="ENSEMBL",
+                       multiVals="first")
+
+resESOrdered <- resES[order(resES$pvalue),]
+head(resESOrdered)
+
+
+resSN$symbol <- mapIds(org.Hs.eg.db,
+                       keys=gsub("\\.[0-9]*$", "", row.names(resSN)),
+                       column="SYMBOL",
+                       keytype="ENSEMBL",
+                       multiVals="first")
+
+resSN$entrez <- mapIds(org.Hs.eg.db,
+                       keys=gsub("\\.[0-9]*$", "", row.names(resSN)),
+                       column="ENTREZID",
+                       keytype="ENSEMBL",
+                       multiVals="first")
+
+resSNOrdered <- resSN[order(resSN$pvalue),]
+head(resSNOrdered)
+
+
+## MULTIPLE COMPARISONS
+
+## DIAGRAMA DE VENN
+res_EN.genes <- unique(rownames(resEN)[resEN$padj<0.1])
+res_ES.genes <- unique(rownames(resES)[resES$padj<0.1])
+res_SN.genes <- unique(rownames(resSN)[resSN$padj<0.1])
+
+# Combinación de las tres listas
+comb <- unique(c(res_SN.genes,res_EN.genes,res_ES.genes))
+
+# Comparandolas
+res_EN.genes.2 <- comb %in% res_EN.genes
+res_ES.genes.2 <- comb %in% res_ES.genes  
+res_SN.genes.2 <- comb %in% res_SN.genes  
+
+# Generando conteos Venn para el diagrama
+counts.genes <- cbind(res_SN.genes.2, res_EN.genes.2,res_ES.genes.2)
+results.genes <- vennCounts(counts.genes)
+vennDiagram(results.genes, cex = 1,names = c("SFIvsNIT","ELIvsNIT","ELIvsSFI"), 
+            circle.col = c("red", "blue","green"))
+
+
+## HEATMAP
+# Selección de los gees significativos para representar la expresión:
+res_EN.genes <- unique(rownames(resEN)[resEN$padj<0.01])
+res_ES.genes <- unique(rownames(resES)[resES$padj<0.01])
+res_SN.genes <- unique(rownames(resSN)[resSN$padj<0.01])
+probesInHeatmap <- unique(c(res_SN.genes,res_EN.genes,res_ES.genes))
+HMdata <- assay(ddsMat)[rownames(assay(ddsMat)) %in% probesInHeatmap,]
+
+my_palette <- colorRampPalette(c("blue", "red"))(n = 299)
+heatmap.2(HMdata,
+     Rowv = TRUE,
+     Colv = TRUE,
+     dendrogram = 'both',
+     main = "Genes diferencialmente expresados",
+     scale = "row",
+     col = my_palette,
+     sepcolor = "white",
+     sepwidth = c(0.05,0.05),
+     cexRow = 0.5,
+     cexCol = 0.9,
+     key = TRUE,
+     keysize = 1.5,
+     density.info = "histogram",
+     ColSideColors = c(rep("red",10),rep("blue",10), rep("green",10)),
+     tracecol = NULL,
+     srtCol = 30)
+
+
+##### ANÁLISIS DE SIGNIFICACIÓN BIOLÓGICA #####
+
+listOfTables <- list(ELIvsNIT = resENOrdered, 
+                     ELIvsSFI = resESOrdered, 
+                     SFIvsNIT = resSNOrdered)
+listOfSelected <- list()
+
+for (i in 1:length(listOfTables)){
+  topTab <- listOfTables[[i]]
+  listOfSelected[[i]] <- na.omit(topTab$entrez[topTab$padj<0.1])
+}
+sapply(listOfSelected, length)
+
+mapped_genes2GO <- mappedkeys(org.Hs.egGO)
+mapped_genes2KEGG <- mappedkeys(org.Hs.egPATH)
+mapped_genes <- union(mapped_genes2GO , mapped_genes2KEGG)
+
+listOfData <- listOfSelected[1:3]
+comparisonsNames <- c('ELIvsNIT','ELIvsSFI','SFIvsNIT')
+universe <- mapped_genes
+enrichment <- list()
+for (i in 1:length(listOfData)){
+  genesIn <- listOfData[[i]]
+  comparison <- comparisonsNames[i]
+  enrich.result <- enrichPathway(gene = genesIn,
+                                 pvalueCutoff = 0.05,
+                                 readable = T,
+                                 pAdjustMethod = "BH",
+                                 organism = "human",
+                                 universe = universe)
+  enrichment[[i]] <- enrich.result
+  cat("##################################")
+  cat("\nComparison: ", comparison,"\n")
+  print(head(enrich.result[,-8]))
+  
+  if (length(rownames(enrich.result@result)) != 0) {
+    write.csv(as.data.frame(enrich.result), 
+              file =paste0("./results/","ReactomePA.Results.",comparison,".csv"), 
+              row.names = FALSE)
+    
+    pdf(file=paste0("./results/","ReactomePABarplot.",comparison,".pdf"))
+    print(barplot(enrich.result, showCategory = 15, font.size = 4, 
+              title = paste0("Reactome Pathway Analysis for ", comparison,". Barplot")))
+    dev.off()
+    
+    pdf(file = paste0("./results/","ReactomePAcnetplot.",comparison,".pdf"))
+    print(cnetplot(enrich.result, categorySize = "geneNum", schowCategory = 15, 
+                   vertex.label.cex = 0.75))
+    dev.off()
+  }
+}
+
+```
+
+
+
+
+
